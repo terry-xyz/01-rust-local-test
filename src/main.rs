@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
-use std::process::{self, Command};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::{self, Child, Command, ExitStatus};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{env, fs, io};
 
 const ROOT: &str = env!("CARGO_MANIFEST_DIR");
-const USAGE: &str = "usage: rust-test <exercise> [solution-directory-or-file]\n       rust-test --list\n\nexamples:\n  rust-test scalar ../piscine-rust\n  rust-test scalar ../piscine-rust/scalar/src/lib.rs";
+const USAGE: &str = "usage: rust-test <exercise> [solution-directory-or-file]\n       rust-test --list\n\nexamples:\n  rust-test scalar ../piscine-rust\n  rust-test scalar ../piscine-rust/scalar/src/lib.rs\n\nRun only trusted code. This tool does not sandbox solutions or build scripts.\nRuns stop after 120 seconds; set RUST_TEST_TIMEOUT_SECS to a positive whole number to change the limit.";
 
 struct Workspace(PathBuf);
 
@@ -16,7 +16,15 @@ impl Workspace {
             .as_nanos();
         let path =
             env::temp_dir().join(format!("01-rust-local-test-{}-{timestamp}", process::id()));
-        fs::create_dir(&path)?;
+        let builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        let builder = {
+            use std::os::unix::fs::DirBuilderExt;
+            let mut builder = builder;
+            builder.mode(0o700);
+            builder
+        };
+        builder.create(&path)?;
         Ok(Self(path))
     }
 }
@@ -29,6 +37,68 @@ impl Drop for Workspace {
                 self.0.display()
             );
         }
+    }
+}
+
+fn stop_process_tree(child: &mut Child) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        unsafe extern "C" {
+            fn kill(pid: i32, signal: i32) -> i32;
+        }
+        // The child starts its own process group, so this also stops its descendants.
+        if unsafe { kill(-(child.id() as i32), 9) } != 0 {
+            let error = io::Error::last_os_error();
+            if child.try_wait()?.is_none() {
+                return Err(error);
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        let system_root = env::var_os("SystemRoot")
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "SystemRoot is not set"))?;
+        let status = Command::new(PathBuf::from(system_root).join("System32/taskkill.exe"))
+            .args(["/F", "/T", "/PID", &child.id().to_string()])
+            .stdout(process::Stdio::null())
+            .stderr(process::Stdio::null())
+            .status()?;
+        if !status.success() && child.try_wait()?.is_none() {
+            return Err(io::Error::other(
+                "Could not stop Cargo and its child processes",
+            ));
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    child.kill()?;
+    child.wait()?;
+    Ok(())
+}
+
+fn run_with_timeout(command: &mut Command, timeout: Duration) -> io::Result<ExitStatus> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn()?;
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {}
+            Err(error) => {
+                stop_process_tree(&mut child)?;
+                return Err(error);
+            }
+        }
+        if started.elapsed() >= timeout {
+            stop_process_tree(&mut child)?;
+            return Err(io::Error::new(io::ErrorKind::TimedOut, format!(
+                "Timed out after {} seconds. Cargo and its child processes were stopped. Set RUST_TEST_TIMEOUT_SECS to allow more time for a slow build.", timeout.as_secs()
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -146,6 +216,15 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
     let source = solution_dir(&exercise, &input)?;
+    let timeout_seconds = match env::var("RUST_TEST_TIMEOUT_SECS") {
+        Ok(value) => value
+            .parse::<u64>()
+            .ok()
+            .filter(|seconds| *seconds > 0)
+            .ok_or("RUST_TEST_TIMEOUT_SECS must be a positive whole number")?,
+        Err(env::VarError::NotPresent) => 120,
+        Err(error) => return Err(error.into()),
+    };
     let workspace = Workspace::new()?;
     let project = workspace.0.join("tests").join(format!("{exercise}_test"));
     copy_tree(&tests, &project)?;
@@ -175,14 +254,15 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
         format!("{manifest}\n[workspace]\n[profile.test]\noverflow-checks = true\n"),
     )?;
     println!("Testing {exercise} with 01-edu tests: {}", source.display());
-    let status = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+    let mut command = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+    command
         .args(["test", "--manifest-path"])
         .arg(&manifest_path)
         .arg("--target-dir")
         .arg(Path::new(ROOT).join("target/exercises"))
         .env("CARGO_TARGET_DIR", Path::new(ROOT).join("target/exercises"))
-        .current_dir(&project)
-        .status()?;
+        .current_dir(&project);
+    let status = run_with_timeout(&mut command, Duration::from_secs(timeout_seconds))?;
     if status.success() {
         println!("{exercise} passed");
     } else {
@@ -200,4 +280,80 @@ fn main() {
         }
     };
     process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture_command(mode: &str) -> Command {
+        let mut command = Command::new(env::current_exe().unwrap());
+        command
+            .args(["--exact", "tests::process_fixture", "--nocapture"])
+            .env("RUST_TEST_PROCESS_FIXTURE", mode)
+            .stdout(process::Stdio::null())
+            .stderr(process::Stdio::null());
+        command
+    }
+
+    #[test]
+    fn process_fixture() {
+        match env::var("RUST_TEST_PROCESS_FIXTURE").as_deref() {
+            Ok("fail") => panic!("Fixture failure"),
+            Ok("parent") => {
+                fixture_command("child").spawn().unwrap().wait().unwrap();
+            }
+            Ok("child") => {
+                for _ in 0..500 {
+                    fs::write(
+                        env::var_os("RUST_TEST_HEARTBEAT").unwrap(),
+                        format!("{:?}", SystemTime::now()),
+                    )
+                    .unwrap();
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn process_exit_codes_and_timeout() {
+        assert!(
+            run_with_timeout(&mut fixture_command("pass"), Duration::from_secs(5))
+                .unwrap()
+                .success()
+        );
+        assert!(
+            !run_with_timeout(&mut fixture_command("fail"), Duration::from_secs(5))
+                .unwrap()
+                .success()
+        );
+        let workspace = Workspace::new().unwrap();
+        let heartbeat = workspace.0.join("heartbeat");
+        let error = run_with_timeout(
+            fixture_command("parent").env("RUST_TEST_HEARTBEAT", &heartbeat),
+            Duration::from_secs(2),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        let last = fs::read(&heartbeat).expect("Child process did not start");
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(
+            fs::read(&heartbeat).unwrap(),
+            last,
+            "Descendant survived timeout"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let workspace = Workspace::new().unwrap();
+        assert_eq!(
+            fs::metadata(&workspace.0).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
 }

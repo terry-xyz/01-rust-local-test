@@ -20,7 +20,12 @@ cargo --version
 Some exercises use external crates, which Cargo downloads on their first run.
 Other exercises may need nightly Rust or a Unix system, as the official image
 uses Linux and nightly Rust. This local runner does not reproduce the image's
-process isolation or time limits.
+process isolation or memory and CPU limits.
+
+**Run only trusted code.** Use this tester for solutions you wrote yourself or
+code you have reviewed and trust. It runs solutions, tests, and build scripts
+with your computer account's permissions. They can access your files, network,
+and environment variables. A temporary copy does not prevent that access.
 
 ## Usage
 
@@ -141,14 +146,34 @@ exercise name. Exercise names accept hyphens or underscores.
 - **No upstream tests bundled:** run `--list` and check the exercise name.
 - **No solution folder found:** check that your exercise has a `src` folder and
   that you gave the correct solution path.
+- **Timed out:** runs stop after two minutes, including downloads, compilation,
+  and tests. Check your code for an endless loop. If a trusted build needs more
+  time, set a longer limit before running it:
 
-The tester keeps your solution files unchanged. If your exercise has no
+  ```powershell
+  $env:RUST_TEST_TIMEOUT_SECS = '300'
+  ..\01-rust-local-test\rust-test.cmd scalar
+  Remove-Item Env:\RUST_TEST_TIMEOUT_SECS
+  ```
+
+  In Git Bash, macOS, or Linux:
+
+  ```sh
+  RUST_TEST_TIMEOUT_SECS=300 sh ../01-rust-local-test/rust-test scalar
+  ```
+
+  The value must be a positive whole number of seconds. When the limit is
+  reached, the runner stops Cargo and its child processes.
+
+The tester copies your solution before running it. If your exercise has no
 `Cargo.toml`, the file Rust uses for project settings, the tester creates one
 only in a temporary copy. Some tests also need another solved exercise next to
 the current one, such as `expected_variable` needing `edit_distance`.
 
 Solutions and tests are copied into a temporary directory and cleaned up after
-each run. Build output is kept in this repository's ignored `target` directory.
+each run, including timeouts. On Linux and macOS, only your account can access
+this directory. Build output is kept in this repository's ignored `target`
+directory.
 The command returns a nonzero exit code when compilation or tests fail.
 
 ## Upstream files
@@ -171,7 +196,8 @@ run the script, review the vendor changes, and rerun exercises you have solved.
 
 ```powershell
 cargo fmt --check
-cargo clippy --offline -- -D warnings
+cargo clippy --offline --all-targets -- -D warnings
+cargo test --offline
 .\rust-test.cmd scalar ..\piscine-rust
 ```
 
