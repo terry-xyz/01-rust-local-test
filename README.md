@@ -203,3 +203,12 @@ cargo test --offline
 
 The CLI is defined in [src/main.rs](src/main.rs); exercise assertions remain
 in the [official test suites](vendor/01-edu-rust/tests).
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, checks, and how to submit changes.
+
+## License
+
+Original project files are covered by the [MIT license](LICENSE). Vendored
+01-edu files retain their upstream terms and notices; see [THIRD_PARTY.md](THIRD_PARTY.md).

@@ -1,5 +1,9 @@
 # Third-party code
 
+The [MIT license](LICENSE) covers this project's original runner, scripts,
+tests, documentation, and metadata. Vendored files retain their upstream
+terms and notices.
+
 Files under `vendor/01-edu-rust/tests` and `vendor/01-edu-rust/tests_utility`
 are copied unchanged from the official `ghcr.io/01-edu/test-rust` image.
 
