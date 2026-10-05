@@ -1,0 +1,9 @@
+[package]
+name = "rust-local-test"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "rust-test"
+path = "src/main.rs"

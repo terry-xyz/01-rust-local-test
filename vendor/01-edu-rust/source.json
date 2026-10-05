@@ -1,0 +1,6 @@
+{
+  "image": "ghcr.io/01-edu/test-rust",
+  "digest": "sha256:979f5a497a90eb55ce610afcf87cdd01fea1ca8694a9cc98e6db22c028ea3e82",
+  "source": "https://github.com/01-edu/rust-tests",
+  "license": "MIT"
+}

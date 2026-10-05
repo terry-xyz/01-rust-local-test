@@ -1,0 +1,3 @@
+#!/bin/sh
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec cargo run --quiet --offline --manifest-path "$DIR/Cargo.toml" --bin rust-test -- "$@"

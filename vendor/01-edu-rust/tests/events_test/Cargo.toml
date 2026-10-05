@@ -1,0 +1,11 @@
+[package]
+name = "events_test"
+version = "0.1.0"
+authors = ["Augusto <aug.ornelas@gmail.com>"]
+edition = "2024"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+events = { path = "../../solutions/events" }
+colored = "3.0.0"
